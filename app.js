@@ -256,6 +256,7 @@ const els = {
   theme: document.getElementById("themeSelect"),
   depth: document.getElementById("depthSelect"),
   explain: document.getElementById("explainBtn"),
+  install: document.getElementById("installBtn"),
   settings: document.getElementById("settingsBtn"),
   emptySettings: document.getElementById("emptySettingsBtn"),
   sample: document.getElementById("sampleBtn"),
@@ -283,6 +284,7 @@ let isGenerating = false;
 let lastMarkdown = "";
 let renderTimer = null;
 let toastTimer = null;
+let installPrompt = null;
 
 // ---------- Init ----------
 function init() {
@@ -360,6 +362,28 @@ function init() {
   });
 
   marked.setOptions({ gfm: true, breaks: false });
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    installPrompt = e;
+    els.install.hidden = false;
+  });
+  els.install.addEventListener("click", async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === "accepted") els.install.hidden = true;
+    installPrompt = null;
+  });
+  window.addEventListener("appinstalled", () => {
+    els.install.hidden = true;
+    installPrompt = null;
+    showToast("CodeLens installed");
+  });
 }
 
 function savedModel() {
