@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeLens — AI Code Explainer</title>
+  <meta name="description" content="Paste code in 20+ programming languages and get clear AI-powered explanations. An IDE-style editor in your browser.">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/monokai.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/eclipse.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/base16-light.min.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="8 6 3 12 8 18"></polyline>
+        <polyline points="16 6 21 12 16 18"></polyline>
+        <line x1="13" y1="4" x2="11" y2="20"></line>
+      </svg>
+      <span class="brand-name">CodeLens</span>
+      <span class="brand-tag">AI Code Explainer</span>
+    </div>
+
+    <div class="toolbar-controls">
+      <label class="select-group">
+        <span class="select-label">Language</span>
+        <select id="languageSelect" aria-label="Programming language"></select>
+      </label>
+
+      <label class="select-group">
+        <span class="select-label">Theme</span>
+        <select id="themeSelect" aria-label="Editor theme">
+          <option value="dracula">Dracula</option>
+          <option value="material-darker">Material Darker</option>
+          <option value="monokai">Monokai</option>
+          <option value="eclipse">Eclipse (light)</option>
+          <option value="base16-light">Base16 Light</option>
+        </select>
+      </label>
+
+      <label class="select-group">
+        <span class="select-label">Depth</span>
+        <select id="depthSelect" aria-label="Explanation depth">
+          <option value="beginner">Beginner-friendly</option>
+          <option value="line-by-line">Line-by-line</option>
+          <option value="technical">Technical deep-dive</option>
+        </select>
+      </label>
+
+      <button id="explainBtn" class="btn btn-primary">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+        <span>Explain</span>
+      </button>
+
+      <button id="settingsBtn" class="btn btn-icon" aria-label="Settings" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="pane editor-pane" aria-label="Code editor">
+      <div class="pane-header">
+        <span class="file-tab"><span class="file-dot"></span><span id="fileName">main.py</span></span>
+        <div class="pane-actions">
+          <button id="sampleBtn" class="btn btn-ghost" title="Load sample code">Sample</button>
+          <button id="clearBtn" class="btn btn-ghost" title="Clear the editor">Clear</button>
+        </div>
+      </div>
+      <div class="editor-wrap">
+        <textarea id="codeEditor" aria-label="Code input"></textarea>
+      </div>
+    </section>
+
+    <section class="pane explanation-pane" aria-label="Explanation">
+      <div class="pane-header">
+        <span class="pane-title">Explanation</span>
+        <div class="pane-actions">
+          <button id="copyBtn" class="btn btn-ghost" title="Copy explanation" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            Copy
+          </button>
+        </div>
+      </div>
+      <div id="explanationOutput" class="explanation-output">
+        <div class="empty-state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2a7 7 0 0 1 7 7c0 2.4-1.2 4.5-3 5.7V17a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2.3C6.2 13.5 5 11.4 5 9a7 7 0 0 1 7-7z"></path>
+            <line x1="9" y1="22" x2="15" y2="22"></line>
+          </svg>
+          <h2>Understand any code, instantly</h2>
+          <p>Paste or type code on the left, pick a language and depth, then hit <strong>Explain</strong> (or <kbd>Ctrl</kbd>+<kbd>Enter</kbd>).</p>
+          <p class="empty-hint">Free to use — no API key needed. Choose a model in <button id="emptySettingsBtn" class="link-btn">Settings</button>.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <span id="statusState" class="status-item status-ready">Ready</span>
+    <span id="statusCursor" class="status-item">Ln 1, Col 1</span>
+    <span id="statusLanguage" class="status-item">Python</span>
+    <span id="statusChars" class="status-item">0 characters</span>
+    <span class="status-item status-right">Free AI via Puter</span>
+  </footer>
+
+  <div id="settingsModal" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="modal-header">
+        <h2 id="settingsTitle">Settings</h2>
+        <button id="closeSettingsBtn" class="btn btn-icon" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span class="field-label">AI model</span>
+          <select id="modelSelect">
+            <option value="google/gemini-3.8-flash">Gemini 3.8 Flash — fast (recommended)</option>
+            <option value="anthropic/claude-opus-5-5">Claude Opus 5.5 — most capable</option>
+            <option value="openai/gpt-5.5">GPT-5.5 — balanced</option>
+            <option value="deepseek/deepseek-v4-pro">DeepSeek V4 Pro</option>
+          </select>
+        </label>
+        <p class="field-hint">No API key needed — AI is provided free by <a href="https://puter.com" target="_blank" rel="noopener">Puter</a>. On first use, you may be asked to sign into a free Puter account in a popup. Your code is sent only to the AI provider you choose.</p>
+      </div>
+      <div class="modal-footer">
+        <button id="saveSettingsBtn" class="btn btn-primary">Save settings</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/go/go.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/rust/rust.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/ruby/ruby.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/php/php.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/swift/swift.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/sql/sql.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/r/r.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/lua/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/perl/perl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/selection/active-line.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+  <script src="https://js.puter.com/v2/"></script>
+  <script src="app.js"></script>
+</body>
+</html>
