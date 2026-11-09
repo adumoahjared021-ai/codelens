@@ -281,6 +281,9 @@ const els = {
   tabExplanation: document.getElementById("tabExplanation"),
   tabOutput: document.getElementById("tabOutput"),
   consoleOutput: document.getElementById("consoleOutput"),
+  stdinToggle: document.getElementById("stdinToggle"),
+  stdinArrow: document.getElementById("stdinArrow"),
+  stdinInput: document.getElementById("stdinInput"),
   settings: document.getElementById("settingsBtn"),
   emptySettings: document.getElementById("emptySettingsBtn"),
   sample: document.getElementById("sampleBtn"),
@@ -374,6 +377,7 @@ function init() {
   });
   els.copy.addEventListener("click", copyActive);
   els.run.addEventListener("click", runCode);
+  els.stdinToggle.addEventListener("click", () => setStdinOpen(els.stdinInput.hidden));
   els.tabExplanation.addEventListener("click", () => switchTab("explanation"));
   els.tabOutput.addEventListener("click", () => switchTab("output"));
 
@@ -738,6 +742,19 @@ function appendConsole(text, kind) {
   els.consoleOutput.scrollTop = els.consoleOutput.scrollHeight;
 }
 
+function setStdinOpen(open) {
+  els.stdinInput.hidden = !open;
+  els.stdinToggle.setAttribute("aria-expanded", String(open));
+  els.stdinArrow.textContent = open ? "▾" : "▸";
+  if (open) els.stdinInput.focus();
+}
+
+function readsInput(code, langId) {
+  if (langId === "javascript") return /\bprompt\s*\(/.test(code);
+  if (langId === "html" || langId === "css") return false;
+  return /\b(scanf|fgets|gets|getchar|cin|input\s*\(|raw_input|readline|ReadLine|readLine|Scanner|nextLine|nextInt|nextDouble|nextFloat|bufio|read\s|read\()/.test(code);
+}
+
 async function runCode() {
   const code = editor.getValue().trim();
   if (!code) {
@@ -755,16 +772,21 @@ async function runCode() {
   switchTab("output");
   consoleText = "";
   els.consoleOutput.innerHTML = '<div class="console-status">Starting…</div><pre class="console-pre"></pre>';
+  const stdin = els.stdinInput.value;
+  if (!stdin.trim() && readsInput(code, lang.id)) {
+    appendConsole("Hint: this program asks for input. Open \"Program input\" below the editor, type the answers (one per line), then press Run again.\n\n", "stdout");
+    setStdinOpen(true);
+  }
   setRunning(true);
   try {
     if (lang.id === "javascript") {
-      await runJsLocally(code);
+      await runJsLocally(code, stdin);
     } else if (lang.id === "html") {
       renderPreview(code, "HTML preview — rendered locally in your browser.");
     } else if (lang.id === "css") {
       renderPreview(wrapCssPreview(code), "CSS preview on sample elements — rendered locally.");
     } else {
-      await runWandbox(code, lang);
+      await runWandbox(code, lang, stdin);
     }
   } catch (err) {
     appendConsole((err.message || "Run failed.") + "\n", "stderr");
@@ -774,7 +796,7 @@ async function runCode() {
   }
 }
 
-function runJsLocally(code) {
+function runJsLocally(code, stdin) {
   return new Promise((resolve) => {
     const workerSource = `
       const format = (v) => {
@@ -786,9 +808,18 @@ function runJsLocally(code) {
       console.info = console.log;
       console.warn = (...a) => send("stdout", a);
       console.error = (...a) => send("stderr", a);
+      let inputLines = [];
+      let inputIndex = 0;
+      self.prompt = (msg) => {
+        const value = inputIndex < inputLines.length ? inputLines[inputIndex] : null;
+        inputIndex++;
+        send("stdout", [(msg ? msg + " " : "") + (value === null ? "(no more input — add lines to Program input)" : value)]);
+        return value;
+      };
       self.onmessage = async (e) => {
+        inputLines = (e.data.stdin || "").split("\\n");
         try {
-          const fn = new Function('"use strict"; return (async () => {' + e.data + '\\n})()');
+          const fn = new Function('"use strict"; return (async () => {' + e.data.code + '\\n})()');
           const result = await fn();
           if (result !== undefined) send("stdout", [result]);
           self.postMessage({ type: "done" });
@@ -824,11 +855,11 @@ function runJsLocally(code) {
       resolve();
     };
     setConsoleStatus("Running locally in your browser…");
-    worker.postMessage(code);
+    worker.postMessage({ code, stdin });
   });
 }
 
-async function runWandbox(code, lang) {
+async function runWandbox(code, lang, stdin) {
   setConsoleStatus("Running " + lang.name + " on Wandbox — a free public runner (your code is sent to their server)…");
   // Wandbox compiles Java as prog.java, so a public class name would not match the file.
   if (lang.id === "java") {
@@ -841,7 +872,7 @@ async function runWandbox(code, lang) {
     res = await fetch(WANDBOX_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ compiler: WANDBOX_COMPILERS[lang.id], code }),
+      body: JSON.stringify({ compiler: WANDBOX_COMPILERS[lang.id], code, stdin: stdin || "" }),
       signal: controller.signal,
     });
   } catch (err) {

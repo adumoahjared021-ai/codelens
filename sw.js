@@ -1,4 +1,4 @@
-const CACHE = "codelens-v2";
+const CACHE = "codelens-v3";
 const SHELL = [
   "./",
   "./index.html",

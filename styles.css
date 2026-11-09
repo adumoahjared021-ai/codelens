@@ -235,6 +235,42 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .editor-wrap { flex: 1; min-height: 0; }
 .editor-wrap .CodeMirror { height: 100%; font-family: var(--font-mono); font-size: 14px; line-height: 1.6; }
 
+/* ---------- Program input (stdin) ---------- */
+.stdin-panel { border-top: 1px solid var(--border); background: var(--panel-header); }
+.stdin-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+.stdin-toggle:hover { color: var(--accent-green); }
+.stdin-arrow { font-size: 11px; }
+.stdin-hint { font-weight: 400; color: var(--text-dim); }
+.stdin-input {
+  display: block;
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  resize: vertical;
+  min-height: 54px;
+  max-height: 30vh;
+  box-sizing: border-box;
+}
+.stdin-input:focus { outline: none; }
+
 /* ---------- Explanation output ---------- */
 .explanation-output {
   flex: 1;

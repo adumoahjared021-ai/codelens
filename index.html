@@ -100,6 +100,13 @@
       <div class="editor-wrap">
         <textarea id="codeEditor" aria-label="Code input"></textarea>
       </div>
+      <div class="stdin-panel">
+        <button id="stdinToggle" class="stdin-toggle" aria-expanded="false" title="Input for programs that ask questions (scanf, input(), cin, Scanner…)">
+          <span id="stdinArrow" class="stdin-arrow">▸</span> Program input
+          <span class="stdin-hint">— type here if your code asks for numbers or text</span>
+        </button>
+        <textarea id="stdinInput" class="stdin-input" rows="3" hidden spellcheck="false" aria-label="Program input" placeholder="Type the answers your program will ask for, one per line. Example:&#10;5&#10;+&#10;3"></textarea>
+      </div>
     </section>
 
     <section class="pane explanation-pane" aria-label="Explanation">
