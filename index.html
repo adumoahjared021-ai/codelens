@@ -57,6 +57,14 @@
         </select>
       </label>
 
+      <button id="runBtn" class="btn btn-run" title="Run code (Ctrl+Shift+Enter)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="4 17 10 11 4 5"></polyline>
+          <line x1="12" y1="19" x2="20" y2="19"></line>
+        </svg>
+        <span>Run</span>
+      </button>
+
       <button id="explainBtn" class="btn btn-primary">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
         <span>Explain</span>
@@ -96,7 +104,10 @@
 
     <section class="pane explanation-pane" aria-label="Explanation">
       <div class="pane-header">
-        <span class="pane-title">Explanation</span>
+        <div class="pane-tabs" role="tablist">
+          <button id="tabExplanation" class="pane-tab active" role="tab" aria-selected="true">Explanation</button>
+          <button id="tabOutput" class="pane-tab" role="tab" aria-selected="false">Output</button>
+        </div>
         <div class="pane-actions">
           <button id="copyBtn" class="btn btn-ghost" title="Copy explanation" disabled>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -118,6 +129,7 @@
           <p class="empty-hint">First time? Add your free Gemini API key in <button id="emptySettingsBtn" class="link-btn">Settings</button> — no credit card needed.</p>
         </div>
       </div>
+      <div id="consoleOutput" class="console-output" hidden></div>
     </section>
   </main>
 

@@ -17,6 +17,26 @@ const MODELS = [
 ];
 const DEFAULT_MODEL = MODELS[0];
 
+const WANDBOX_URL = "https://wandbox.org/api/compile.json";
+const WANDBOX_COMPILERS = {
+  python: "cpython-3.13.8",
+  typescript: "typescript-5.6.2",
+  java: "openjdk-jdk-22+36",
+  c: "gcc-13.2.0-c",
+  cpp: "gcc-13.2.0",
+  csharp: "mono-6.12.0.199",
+  go: "go-1.23.2",
+  rust: "rust-1.82.0",
+  ruby: "ruby-3.4.9",
+  php: "php-8.3.12",
+  swift: "swift-6.0.1",
+  sql: "sqlite-3.46.1",
+  shell: "bash",
+  r: "r-4.4.1",
+  lua: "lua-5.4.7",
+  perl: "perl-5.40.0",
+};
+
 const LANGUAGES = [
   { id: "python", name: "Python", mode: "python", ext: "py" },
   { id: "javascript", name: "JavaScript", mode: { name: "javascript" }, ext: "js" },
@@ -256,7 +276,11 @@ const els = {
   theme: document.getElementById("themeSelect"),
   depth: document.getElementById("depthSelect"),
   explain: document.getElementById("explainBtn"),
+  run: document.getElementById("runBtn"),
   install: document.getElementById("installBtn"),
+  tabExplanation: document.getElementById("tabExplanation"),
+  tabOutput: document.getElementById("tabOutput"),
+  consoleOutput: document.getElementById("consoleOutput"),
   settings: document.getElementById("settingsBtn"),
   emptySettings: document.getElementById("emptySettingsBtn"),
   sample: document.getElementById("sampleBtn"),
@@ -285,6 +309,9 @@ let lastMarkdown = "";
 let renderTimer = null;
 let toastTimer = null;
 let installPrompt = null;
+let activeTab = "explanation";
+let consoleText = "";
+let isRunning = false;
 
 // ---------- Init ----------
 function init() {
@@ -313,6 +340,8 @@ function init() {
     extraKeys: {
       "Ctrl-Enter": () => els.explain.click(),
       "Cmd-Enter": () => els.explain.click(),
+      "Ctrl-Shift-Enter": () => els.run.click(),
+      "Cmd-Shift-Enter": () => els.run.click(),
     },
   });
 
@@ -343,7 +372,10 @@ function init() {
     editor.setValue("");
     editor.focus();
   });
-  els.copy.addEventListener("click", copyExplanation);
+  els.copy.addEventListener("click", copyActive);
+  els.run.addEventListener("click", runCode);
+  els.tabExplanation.addEventListener("click", () => switchTab("explanation"));
+  els.tabOutput.addEventListener("click", () => switchTab("output"));
 
   els.settings.addEventListener("click", () => openSettings());
   els.emptySettings.addEventListener("click", () => openSettings());
@@ -526,13 +558,13 @@ async function explainCode() {
 
     await readStream(response.body);
     renderMarkdown(lastMarkdown, false);
-    els.copy.disabled = !lastMarkdown;
+    updateCopyButton();
     setStatus("Ready", "ready");
   } catch (err) {
     if (err.name === "AbortError") {
       if (lastMarkdown) {
         renderMarkdown(lastMarkdown, false);
-        els.copy.disabled = false;
+        updateCopyButton();
       } else {
         renderEmptyState();
       }
@@ -654,14 +686,212 @@ function apiErrorMessage(status, errBody) {
   }
 }
 
-async function copyExplanation() {
-  if (!lastMarkdown) return;
+// ---------- Tabs & copy ----------
+function switchTab(tab) {
+  activeTab = tab;
+  const isExpl = tab === "explanation";
+  els.output.hidden = !isExpl;
+  els.consoleOutput.hidden = isExpl;
+  els.tabExplanation.classList.toggle("active", isExpl);
+  els.tabOutput.classList.toggle("active", !isExpl);
+  els.tabExplanation.setAttribute("aria-selected", String(isExpl));
+  els.tabOutput.setAttribute("aria-selected", String(!isExpl));
+  updateCopyButton();
+}
+
+function updateCopyButton() {
+  els.copy.disabled = activeTab === "explanation" ? !lastMarkdown : !consoleText;
+}
+
+async function copyActive() {
+  const text = activeTab === "explanation" ? lastMarkdown : consoleText;
+  if (!text) return;
   try {
-    await navigator.clipboard.writeText(lastMarkdown);
-    showToast("Explanation copied");
+    await navigator.clipboard.writeText(text);
+    showToast(activeTab === "explanation" ? "Explanation copied" : "Output copied");
   } catch {
     showToast("Copy failed — your browser blocked clipboard access");
   }
+}
+
+// ---------- Code execution ----------
+function setRunning(active) {
+  isRunning = active;
+  els.run.disabled = active;
+  els.run.querySelector("span").textContent = active ? "Running…" : "Run";
+}
+
+function setConsoleStatus(text) {
+  const el = els.consoleOutput.querySelector(".console-status");
+  if (el) el.textContent = text;
+}
+
+function appendConsole(text, kind) {
+  const pre = els.consoleOutput.querySelector(".console-pre");
+  if (!pre) return;
+  const span = document.createElement("span");
+  if (kind === "stderr") span.className = "console-stderr";
+  span.textContent = text;
+  pre.appendChild(span);
+  consoleText += text;
+  updateCopyButton();
+  els.consoleOutput.scrollTop = els.consoleOutput.scrollHeight;
+}
+
+async function runCode() {
+  const code = editor.getValue().trim();
+  if (!code) {
+    showToast("Add some code first");
+    return;
+  }
+  const lang = currentLanguage();
+  const supported = lang.id === "javascript" || lang.id === "html" || lang.id === "css" || WANDBOX_COMPILERS[lang.id];
+  if (!supported) {
+    showToast(lang.name + " can't be run here" + (lang.id === "kotlin" ? " — the free runner doesn't support it yet" : ""));
+    return;
+  }
+  if (isRunning) return;
+
+  switchTab("output");
+  consoleText = "";
+  els.consoleOutput.innerHTML = '<div class="console-status">Starting…</div><pre class="console-pre"></pre>';
+  setRunning(true);
+  try {
+    if (lang.id === "javascript") {
+      await runJsLocally(code);
+    } else if (lang.id === "html") {
+      renderPreview(code, "HTML preview — rendered locally in your browser.");
+    } else if (lang.id === "css") {
+      renderPreview(wrapCssPreview(code), "CSS preview on sample elements — rendered locally.");
+    } else {
+      await runWandbox(code, lang);
+    }
+  } catch (err) {
+    appendConsole((err.message || "Run failed.") + "\n", "stderr");
+    setConsoleStatus("Failed.");
+  } finally {
+    setRunning(false);
+  }
+}
+
+function runJsLocally(code) {
+  return new Promise((resolve) => {
+    const workerSource = `
+      const format = (v) => {
+        if (typeof v === "string") return v;
+        try { return JSON.stringify(v) ?? String(v); } catch { return String(v); }
+      };
+      const send = (type, args) => self.postMessage({ type, text: args.map(format).join(" ") });
+      console.log = (...a) => send("stdout", a);
+      console.info = console.log;
+      console.warn = (...a) => send("stdout", a);
+      console.error = (...a) => send("stderr", a);
+      self.onmessage = async (e) => {
+        try {
+          const fn = new Function('"use strict"; return (async () => {' + e.data + '\\n})()');
+          const result = await fn();
+          if (result !== undefined) send("stdout", [result]);
+          self.postMessage({ type: "done" });
+        } catch (err) {
+          send("stderr", [String((err && err.stack) || err)]);
+          self.postMessage({ type: "done" });
+        }
+      };
+    `;
+    const worker = new Worker(URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" })));
+    const timer = setTimeout(() => {
+      worker.terminate();
+      appendConsole("Stopped: code ran longer than 5 seconds (possible infinite loop).\n", "stderr");
+      setConsoleStatus("Stopped — time limit reached.");
+      resolve();
+    }, 5000);
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === "done") {
+        clearTimeout(timer);
+        worker.terminate();
+        setConsoleStatus("Finished — ran locally in your browser.");
+        resolve();
+      } else {
+        appendConsole(msg.text + "\n", msg.type);
+      }
+    };
+    worker.onerror = (err) => {
+      clearTimeout(timer);
+      worker.terminate();
+      appendConsole((err.message || "Worker error") + "\n", "stderr");
+      setConsoleStatus("Finished with errors.");
+      resolve();
+    };
+    setConsoleStatus("Running locally in your browser…");
+    worker.postMessage(code);
+  });
+}
+
+async function runWandbox(code, lang) {
+  setConsoleStatus("Running " + lang.name + " on Wandbox — a free public runner (your code is sent to their server)…");
+  // Wandbox compiles Java as prog.java, so a public class name would not match the file.
+  if (lang.id === "java") {
+    code = code.replace(/\bpublic\s+((?:(?:final|abstract|sealed|strictfp)\s+)*)(class|interface|enum|record)\b/g, "$1$2");
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60000);
+  let res;
+  try {
+    res = await fetch(WANDBOX_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ compiler: WANDBOX_COMPILERS[lang.id], code }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error("The runner took longer than 60 seconds. Try again.");
+    throw new Error("Can't reach the free code runner. Check your connection and try again.");
+  } finally {
+    clearTimeout(timer);
+  }
+  if (res.status === 429) throw new Error("The free runner is busy (rate limit). Wait a few seconds and try again.");
+  if (!res.ok) throw new Error("The runner returned an error (HTTP " + res.status + "). Try again.");
+  const data = await res.json();
+  const compileErr = data.compiler_error || "";
+  if (compileErr) appendConsole(compileErr, "stderr");
+  if (data.program_output) appendConsole(data.program_output, "stdout");
+  const progErr = data.program_error || "";
+  if (progErr && progErr !== compileErr && progErr !== data.compiler_message) appendConsole(progErr, "stderr");
+  if (data.signal) {
+    setConsoleStatus("Killed (" + data.signal + ") — possible infinite loop or time limit.");
+  } else if (data.status && data.status !== "0") {
+    setConsoleStatus("Finished with exit code " + data.status + ".");
+  } else {
+    setConsoleStatus("Finished successfully.");
+  }
+}
+
+function renderPreview(html, status) {
+  els.consoleOutput.innerHTML = "";
+  const bar = document.createElement("div");
+  bar.className = "console-status";
+  bar.textContent = status;
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("sandbox", "allow-scripts");
+  iframe.setAttribute("title", "Code preview");
+  iframe.srcdoc = html;
+  els.consoleOutput.appendChild(bar);
+  els.consoleOutput.appendChild(iframe);
+  consoleText = html;
+  updateCopyButton();
+}
+
+function wrapCssPreview(css) {
+  return `<!DOCTYPE html>
+<html><head><style>${css}</style></head>
+<body style="font-family:sans-serif;padding:24px;">
+<h1>Heading one</h1>
+<p>A paragraph with <a href="#">a link</a> and <strong>bold text</strong>.</p>
+<button>Button</button>
+<div class="card" style="margin-top:16px;max-width:320px;"><h3>Card title</h3><p>The .card class is a common target.</p></div>
+<ul><li>First item</li><li>Second item</li></ul>
+</body></html>`;
 }
 
 init();
