@@ -1,6 +1,8 @@
 "use strict";
 
+const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
 const STORAGE_KEYS = {
+  apiKey: "codelens.apiKey",
   model: "codelens.model",
   theme: "codelens.theme",
   language: "codelens.language",
@@ -8,10 +10,10 @@ const STORAGE_KEYS = {
 };
 
 const MODELS = [
-  "google/gemini-3.8-flash",
-  "anthropic/claude-opus-5-5",
-  "openai/gpt-5.5",
-  "deepseek/deepseek-v4-pro",
+  "gemini-3.8-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
+  "gemma-4-31b-it",
 ];
 const DEFAULT_MODEL = MODELS[0];
 
@@ -266,6 +268,8 @@ const els = {
   statusLanguage: document.getElementById("statusLanguage"),
   statusChars: document.getElementById("statusChars"),
   modal: document.getElementById("settingsModal"),
+  apiKey: document.getElementById("apiKeyInput"),
+  toggleKey: document.getElementById("toggleKeyBtn"),
   model: document.getElementById("modelSelect"),
   saveSettings: document.getElementById("saveSettingsBtn"),
   closeSettings: document.getElementById("closeSettingsBtn"),
@@ -274,8 +278,8 @@ const els = {
 
 // ---------- State ----------
 let editor;
+let abortController = null;
 let isGenerating = false;
-let stopRequested = false;
 let lastMarkdown = "";
 let renderTimer = null;
 let toastTimer = null;
@@ -339,10 +343,15 @@ function init() {
   });
   els.copy.addEventListener("click", copyExplanation);
 
-  els.settings.addEventListener("click", openSettings);
-  els.emptySettings.addEventListener("click", openSettings);
+  els.settings.addEventListener("click", () => openSettings());
+  els.emptySettings.addEventListener("click", () => openSettings());
   els.closeSettings.addEventListener("click", closeSettings);
   els.saveSettings.addEventListener("click", saveSettings);
+  els.toggleKey.addEventListener("click", () => {
+    const show = els.apiKey.type === "password";
+    els.apiKey.type = show ? "text" : "password";
+    els.toggleKey.textContent = show ? "Hide" : "Show";
+  });
   els.modal.addEventListener("click", (e) => {
     if (e.target === els.modal) closeSettings();
   });
@@ -393,17 +402,23 @@ function setStatus(text, kind) {
 }
 
 // ---------- Settings ----------
-function openSettings() {
+function openSettings(notice) {
+  els.apiKey.value = localStorage.getItem(STORAGE_KEYS.apiKey) || "";
   els.model.value = savedModel();
   els.modal.hidden = false;
-  els.model.focus();
+  els.apiKey.focus();
 }
 
 function closeSettings() {
   els.modal.hidden = true;
+  els.apiKey.type = "password";
+  els.toggleKey.textContent = "Show";
 }
 
 function saveSettings() {
+  const key = els.apiKey.value.trim();
+  if (key) localStorage.setItem(STORAGE_KEYS.apiKey, key);
+  else localStorage.removeItem(STORAGE_KEYS.apiKey);
   localStorage.setItem(STORAGE_KEYS.model, els.model.value);
   closeSettings();
   showToast("Settings saved");
@@ -431,11 +446,12 @@ function setGenerating(active) {
     label.textContent = "Explain";
     els.explain.classList.remove("is-stop");
     els.explain.querySelector("svg").innerHTML = '<path d="M8 5v14l11-7z"/>';
+    abortController = null;
   }
 }
 
 function stopGeneration() {
-  stopRequested = true;
+  if (abortController) abortController.abort();
 }
 
 async function explainCode() {
@@ -444,9 +460,10 @@ async function explainCode() {
     showToast("Add some code first");
     return;
   }
-  if (typeof puter === "undefined") {
-    renderError("The AI library didn't load. Check your internet connection and reload the page.");
-    setStatus("Error", "error");
+  const apiKey = localStorage.getItem(STORAGE_KEYS.apiKey);
+  if (!apiKey) {
+    openSettings();
+    showToast("Add your free Gemini API key first");
     return;
   }
 
@@ -455,67 +472,102 @@ async function explainCode() {
   const model = savedModel();
 
   lastMarkdown = "";
-  stopRequested = false;
   els.copy.disabled = true;
   els.output.innerHTML =
-    '<div class="loading-state"><div class="spinner"></div><span>The AI is reading your code…</span></div>';
+    '<div class="loading-state"><div class="spinner"></div><span>Gemini is reading your code…</span></div>';
   setGenerating(true);
+  abortController = new AbortController();
 
-  const prompt = `${SYSTEM_PROMPT}\n\nExplain the following ${lang.name} code.\n\n${DEPTH_PROMPTS[depth]}\n\n\`\`\`${lang.id}\n${code}\n\`\`\``;
+  const userPrompt = `Explain the following ${lang.name} code.\n\n${DEPTH_PROMPTS[depth]}\n\n\`\`\`${lang.id}\n${code}\n\`\`\``;
 
   try {
-    const response = await puter.ai.chat(prompt, { model, stream: true });
-    let firstChunk = true;
+    const response = await fetch(`${API_BASE}${model}:streamGenerateContent?alt=sse`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-goog-api-key": apiKey,
+      },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+      }),
+      signal: abortController.signal,
+    });
 
-    for await (const part of response) {
-      if (stopRequested) break;
-      if (part && part.text) {
-        if (firstChunk) {
-          els.output.innerHTML = '<div class="explanation-content streaming-cursor"></div>';
-          firstChunk = false;
-        }
-        lastMarkdown += part.text;
-        scheduleRender();
-      }
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => null);
+      throw new Error(apiErrorMessage(response.status, errBody));
     }
 
-    if (renderTimer) {
-      clearTimeout(renderTimer);
-      renderTimer = null;
-    }
-
-    if (!lastMarkdown) {
-      if (stopRequested) {
-        renderEmptyState();
-        setStatus("Stopped", "ready");
-      } else {
-        throw new Error("The AI returned an empty response. Please try again.");
-      }
-    } else {
-      renderMarkdown(lastMarkdown, false);
-      els.copy.disabled = false;
-      setStatus(stopRequested ? "Stopped" : "Ready", "ready");
-    }
+    await readStream(response.body);
+    renderMarkdown(lastMarkdown, false);
+    els.copy.disabled = !lastMarkdown;
+    setStatus("Ready", "ready");
   } catch (err) {
-    renderError(friendlyError(err));
-    setStatus("Error", "error");
+    if (err.name === "AbortError") {
+      if (lastMarkdown) {
+        renderMarkdown(lastMarkdown, false);
+        els.copy.disabled = false;
+      } else {
+        renderEmptyState();
+      }
+      setStatus("Stopped", "ready");
+    } else {
+      renderError(err.message || "Something went wrong. Check your connection and try again.");
+      setStatus("Error", "error");
+    }
   } finally {
     setGenerating(false);
   }
 }
 
-function friendlyError(err) {
-  const message =
-    (err && err.message) ||
-    (err && err.error && err.error.message) ||
-    (typeof err === "string" ? err : "");
-  if (/auth|sign.?in|permission|cancel|popup/i.test(message)) {
-    return "Puter needs a free account for AI usage. Click Explain again and complete the free sign-in in the popup window.";
+async function readStream(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let firstChunk = true;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+
+      let event;
+      try {
+        event = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+
+      if (event.error) {
+        throw new Error(event.error.message || "The AI stream failed mid-response.");
+      }
+
+      const candidate = event.candidates && event.candidates[0];
+      const parts = (candidate && candidate.content && candidate.content.parts) || [];
+      for (const part of parts) {
+        if (part.thought) continue;
+        if (part.text) {
+          if (firstChunk) {
+            els.output.innerHTML = '<div class="explanation-content streaming-cursor"></div>';
+            firstChunk = false;
+          }
+          lastMarkdown += part.text;
+          scheduleRender();
+        }
+      }
+    }
   }
-  if (/usage|credit|limit|quota|allowance/i.test(message)) {
-    return "The free usage allowance was reached. Sign into your Puter account when prompted, or try again later.";
-  }
-  return message || "Something went wrong. Check your connection and try again.";
+  if (firstChunk) throw new Error("The AI returned an empty response. Please try again.");
 }
 
 function scheduleRender() {
@@ -554,6 +606,28 @@ function renderError(message) {
   box.appendChild(body);
   els.output.innerHTML = "";
   els.output.appendChild(box);
+}
+
+function apiErrorMessage(status, errBody) {
+  const detail = errBody && errBody.error && errBody.error.message;
+  switch (status) {
+    case 400:
+      if (/api key/i.test(detail || "")) {
+        return "Your API key was rejected. Open Settings and paste a valid key from aistudio.google.com/apikey.";
+      }
+      return detail || "The request was rejected (HTTP 400). Please try again.";
+    case 403:
+      return "This API key doesn't have access to the selected model. Try a different model in Settings.";
+    case 404:
+      return "The selected model wasn't found. Pick a different model in Settings.";
+    case 429:
+      return "Free-tier rate limit reached. Wait a minute and try again — the free quota resets over time.";
+    case 500:
+    case 503:
+      return "Google's servers are busy right now. Please try again in a few seconds.";
+    default:
+      return detail || `Request failed (HTTP ${status}). Please try again.`;
+  }
 }
 
 async function copyExplanation() {
