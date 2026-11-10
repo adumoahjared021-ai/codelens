@@ -424,6 +424,7 @@ kbd {
 }
 
 .status-ready { color: var(--accent-green); }
+.status-save { color: var(--text-dim); }
 .status-busy { color: var(--accent); }
 .status-error { color: var(--danger); }
 .status-right { margin-left: auto; }

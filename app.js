@@ -7,6 +7,8 @@ const STORAGE_KEYS = {
   theme: "codelens.theme",
   language: "codelens.language",
   depth: "codelens.depth",
+  code: "codelens.code",
+  stdin: "codelens.stdin",
 };
 
 const MODELS = [
@@ -295,6 +297,7 @@ const els = {
   statusCursor: document.getElementById("statusCursor"),
   statusLanguage: document.getElementById("statusLanguage"),
   statusChars: document.getElementById("statusChars"),
+  statusSave: document.getElementById("statusSave"),
   modal: document.getElementById("settingsModal"),
   apiKey: document.getElementById("apiKeyInput"),
   toggleKey: document.getElementById("toggleKeyBtn"),
@@ -353,11 +356,22 @@ function init() {
     },
   });
 
+  const savedStdin = localStorage.getItem(STORAGE_KEYS.stdin);
+  if (savedStdin) {
+    els.stdinInput.value = savedStdin;
+    setStdinOpen(true, false);
+  }
+
   applyLanguage(initialLang, true);
   updateStatusBar();
 
   editor.on("cursorActivity", updateStatusBar);
-  editor.on("change", updateStatusBar);
+  editor.on("change", () => {
+    updateStatusBar();
+    scheduleSave();
+  });
+  els.stdinInput.addEventListener("input", scheduleSave);
+  window.addEventListener("beforeunload", saveWork);
 
   els.language.addEventListener("change", () => {
     localStorage.setItem(STORAGE_KEYS.language, els.language.value);
@@ -443,7 +457,8 @@ function applyLanguage(langId, firstLoad) {
   els.fileName.textContent = "main." + lang.ext;
   els.statusLanguage.textContent = lang.name;
   if (firstLoad) {
-    editor.setValue(SAMPLES[lang.id] || GENERIC_SAMPLE);
+    const savedCode = localStorage.getItem(STORAGE_KEYS.code);
+    editor.setValue(savedCode !== null ? savedCode : SAMPLES[lang.id] || GENERIC_SAMPLE);
   }
   updateStatusBar();
 }
@@ -817,11 +832,29 @@ function appendConsole(text, kind) {
   els.consoleOutput.scrollTop = els.consoleOutput.scrollHeight;
 }
 
-function setStdinOpen(open) {
+function setStdinOpen(open, focus = true) {
   els.stdinInput.hidden = !open;
   els.stdinToggle.setAttribute("aria-expanded", String(open));
   els.stdinArrow.textContent = open ? "▾" : "▸";
-  if (open) els.stdinInput.focus();
+  if (open && focus) els.stdinInput.focus();
+}
+
+let saveTimer = null;
+function scheduleSave() {
+  els.statusSave.textContent = "Saving…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveWork, 400);
+}
+
+function saveWork() {
+  clearTimeout(saveTimer);
+  try {
+    localStorage.setItem(STORAGE_KEYS.code, editor.getValue());
+    localStorage.setItem(STORAGE_KEYS.stdin, els.stdinInput.value);
+    els.statusSave.textContent = "Saved";
+  } catch {
+    els.statusSave.textContent = "Not saved";
+  }
 }
 
 function readsInput(code, langId) {
