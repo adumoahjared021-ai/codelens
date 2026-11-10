@@ -109,6 +109,8 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .btn-run { background: var(--accent-green); color: #06231d; }
 .btn-run:hover:not(:disabled) { background: #5fd4bd; }
+.btn-run.btn-stop { background: var(--danger); color: #2b0b08; }
+.btn-run.btn-stop:hover:not(:disabled) { background: #f58a82; }
 
 .btn-icon {
   background: transparent;
@@ -223,6 +225,29 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   color: var(--text);
 }
 .console-stderr { color: var(--danger); }
+.console-ask {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.ask-question { font-size: 13px; margin-bottom: 8px; color: var(--text); }
+.ask-row { display: flex; gap: 8px; }
+.ask-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.ask-input:focus { outline: none; border-color: var(--accent); }
+.ask-send { padding: 7px 14px; font-size: 12.5px; }
 .console-output iframe {
   flex: 1;
   width: 100%;

@@ -315,6 +315,11 @@ let installPrompt = null;
 let activeTab = "explanation";
 let consoleText = "";
 let isRunning = false;
+let activeWorker = null;
+let activeFetchController = null;
+let activeCancel = null;
+let pendingAsk = null;
+let stopRequested = false;
 
 // ---------- Init ----------
 function init() {
@@ -721,8 +726,78 @@ async function copyActive() {
 // ---------- Code execution ----------
 function setRunning(active) {
   isRunning = active;
-  els.run.disabled = active;
-  els.run.querySelector("span").textContent = active ? "Running…" : "Run";
+  els.run.classList.toggle("btn-stop", active);
+  els.run.querySelector("span").textContent = active ? "Stop" : "Run";
+  els.run.title = active ? "Stop the running program" : "Run code (Ctrl+Shift+Enter)";
+}
+
+function stopRun() {
+  stopRequested = true;
+  if (activeWorker) {
+    activeWorker.terminate();
+    activeWorker = null;
+  }
+  if (activeFetchController) {
+    activeFetchController.abort();
+    activeFetchController = null;
+  }
+  if (pendingAsk) {
+    const ask = pendingAsk;
+    pendingAsk = null;
+    ask.cleanup();
+    ask.reject(new Error("Stopped"));
+  }
+  if (activeCancel) {
+    const cancel = activeCancel;
+    activeCancel = null;
+    cancel();
+  }
+  appendConsole("Stopped.\n", "stderr");
+  setConsoleStatus("Stopped.");
+  setRunning(false);
+}
+
+function askInteractively(question) {
+  return new Promise((resolve, reject) => {
+    const wrap = document.createElement("div");
+    wrap.className = "console-ask";
+    const q = document.createElement("div");
+    q.className = "ask-question";
+    q.textContent = question || "Your program asks for input:";
+    const row = document.createElement("div");
+    row.className = "ask-row";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "ask-input";
+    input.placeholder = "Type your answer, press Enter";
+    input.setAttribute("aria-label", "Answer for the running program");
+    const btn = document.createElement("button");
+    btn.className = "btn btn-primary ask-send";
+    btn.textContent = "Send";
+    row.appendChild(input);
+    row.appendChild(btn);
+    wrap.appendChild(q);
+    wrap.appendChild(row);
+    els.consoleOutput.appendChild(wrap);
+    els.consoleOutput.scrollTop = els.consoleOutput.scrollHeight;
+    input.focus();
+
+    const cleanup = () => {
+      wrap.remove();
+      if (pendingAsk && pendingAsk.cleanup === cleanup) pendingAsk = null;
+    };
+    const submit = () => {
+      const value = input.value;
+      cleanup();
+      appendConsole((question ? question + " " : "Input: ") + value + "\n", "stdout");
+      resolve(value);
+    };
+    btn.addEventListener("click", submit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submit();
+    });
+    pendingAsk = { cleanup, reject };
+  });
 }
 
 function setConsoleStatus(text) {
@@ -756,6 +831,10 @@ function readsInput(code, langId) {
 }
 
 async function runCode() {
+  if (isRunning) {
+    stopRun();
+    return;
+  }
   const code = editor.getValue().trim();
   if (!code) {
     showToast("Add some code first");
@@ -767,13 +846,14 @@ async function runCode() {
     showToast(lang.name + " can't be run here" + (lang.id === "kotlin" ? " — the free runner doesn't support it yet" : ""));
     return;
   }
-  if (isRunning) return;
 
   switchTab("output");
   consoleText = "";
   els.consoleOutput.innerHTML = '<div class="console-status">Starting…</div><pre class="console-pre"></pre>';
+  stopRequested = false;
   const stdin = els.stdinInput.value;
-  if (!stdin.trim() && readsInput(code, lang.id)) {
+  const interactiveLang = lang.id === "javascript" || lang.id === "python";
+  if (!stdin.trim() && !interactiveLang && readsInput(code, lang.id)) {
     appendConsole("Hint: this program asks for input. Open \"Program input\" below the editor, type the answers (one per line), then press Run again.\n\n", "stdout");
     setStdinOpen(true);
   }
@@ -781,6 +861,8 @@ async function runCode() {
   try {
     if (lang.id === "javascript") {
       await runJsLocally(code, stdin);
+    } else if (lang.id === "python") {
+      await runPythonLocally(code, stdin);
     } else if (lang.id === "html") {
       renderPreview(code, "HTML preview — rendered locally in your browser.");
     } else if (lang.id === "css") {
@@ -789,15 +871,22 @@ async function runCode() {
       await runWandbox(code, lang, stdin);
     }
   } catch (err) {
-    appendConsole((err.message || "Run failed.") + "\n", "stderr");
-    setConsoleStatus("Failed.");
+    if (!stopRequested) {
+      appendConsole((err.message || "Run failed.") + "\n", "stderr");
+      setConsoleStatus("Failed.");
+    }
   } finally {
+    activeWorker = null;
+    activeFetchController = null;
     setRunning(false);
   }
 }
 
-function runJsLocally(code, stdin) {
+function runJsLocally(code, stdin, interactive = true) {
   return new Promise((resolve) => {
+    const transformed = interactive
+      ? code.replace(/(?:\b(?:window|globalThis|self)\s*\.\s*)?\bprompt\s*\(/g, "await __ask(")
+      : code;
     const workerSource = `
       const format = (v) => {
         if (typeof v === "string") return v;
@@ -810,52 +899,236 @@ function runJsLocally(code, stdin) {
       console.error = (...a) => send("stderr", a);
       let inputLines = [];
       let inputIndex = 0;
+      let askId = 0;
+      const askWaiters = new Map();
+      const nextStdin = () => inputIndex < inputLines.length ? inputLines[inputIndex++] : null;
       self.prompt = (msg) => {
-        const value = inputIndex < inputLines.length ? inputLines[inputIndex] : null;
-        inputIndex++;
+        const value = nextStdin();
         send("stdout", [(msg ? msg + " " : "") + (value === null ? "(no more input — add lines to Program input)" : value)]);
         return value;
       };
+      const __ask = async (msg) => {
+        const question = msg === undefined || msg === null ? "" : String(msg);
+        const pre = nextStdin();
+        if (pre !== null) { send("stdout", [(question ? question + " " : "") + pre]); return pre; }
+        const id = ++askId;
+        self.postMessage({ type: "ask", id, question });
+        return new Promise((res) => askWaiters.set(id, res));
+      };
       self.onmessage = async (e) => {
+        if (e.data.type === "answer") {
+          const res = askWaiters.get(e.data.id);
+          if (res) { askWaiters.delete(e.data.id); res(e.data.value); }
+          return;
+        }
         inputLines = (e.data.stdin || "").split("\\n");
+        if (inputLines.length && inputLines[inputLines.length - 1] === "") inputLines.pop();
         try {
           const fn = new Function('"use strict"; return (async () => {' + e.data.code + '\\n})()');
           const result = await fn();
           if (result !== undefined) send("stdout", [result]);
           self.postMessage({ type: "done" });
         } catch (err) {
-          send("stderr", [String((err && err.stack) || err)]);
-          self.postMessage({ type: "done" });
+          self.postMessage({ type: "error", name: (err && err.name) || "Error", text: String((err && err.stack) || err) });
+          self.postMessage({ type: "done", failed: true });
         }
       };
     `;
     const worker = new Worker(URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" })));
-    const timer = setTimeout(() => {
+    activeWorker = worker;
+    let timer = null;
+    let waiting = false;
+    const armTimer = () => {
+      clearTimeout(timer);
+      if (!waiting) {
+        timer = setTimeout(() => {
+          finish();
+          appendConsole("Stopped: code ran longer than 5 seconds (possible infinite loop).\n", "stderr");
+          setConsoleStatus("Stopped — time limit reached.");
+        }, 5000);
+      }
+    };
+    const finish = () => {
+      clearTimeout(timer);
       worker.terminate();
-      appendConsole("Stopped: code ran longer than 5 seconds (possible infinite loop).\n", "stderr");
-      setConsoleStatus("Stopped — time limit reached.");
+      if (activeWorker === worker) activeWorker = null;
+      if (activeCancel) activeCancel = null;
       resolve();
-    }, 5000);
-    worker.onmessage = (e) => {
+    };
+    activeCancel = finish;
+    worker.onmessage = async (e) => {
       const msg = e.data;
       if (msg.type === "done") {
+        finish();
+        setConsoleStatus(msg.failed ? "Finished with errors." : "Finished — ran locally in your browser.");
+      } else if (msg.type === "ask") {
+        waiting = true;
         clearTimeout(timer);
-        worker.terminate();
-        setConsoleStatus("Finished — ran locally in your browser.");
-        resolve();
+        try {
+          const value = await askInteractively(msg.question);
+          waiting = false;
+          worker.postMessage({ type: "answer", id: msg.id, value });
+          armTimer();
+        } catch { /* stopped by user */ }
+      } else if (msg.type === "error") {
+        if (interactive && msg.name === "SyntaxError" && transformed !== code) {
+          clearTimeout(timer);
+          worker.terminate();
+          appendConsole("Note: live questions work for simple top-level code — using the Program input box for this one.\n", "stdout");
+          runJsLocally(code, stdin, false).then(resolve);
+          return;
+        }
+        appendConsole(msg.text + "\n", "stderr");
       } else {
         appendConsole(msg.text + "\n", msg.type);
       }
     };
     worker.onerror = (err) => {
-      clearTimeout(timer);
-      worker.terminate();
+      finish();
       appendConsole((err.message || "Worker error") + "\n", "stderr");
       setConsoleStatus("Finished with errors.");
-      resolve();
     };
     setConsoleStatus("Running locally in your browser…");
+    worker.postMessage({ code: transformed, stdin });
+    armTimer();
+  });
+}
+
+function runPythonLocally(code, stdin) {
+  return new Promise((resolve) => {
+    const workerSource = `
+      let pyodide = null;
+      let inputLines = [];
+      let askId = 0;
+      const askWaiters = new Map();
+      const send = (type, text) => self.postMessage({ type, text });
+      const nextStdin = () => inputLines.length ? inputLines.shift() : null;
+      const __ask = async (q) => {
+        const question = q === undefined || q === null ? "" : String(q);
+        const pre = nextStdin();
+        if (pre !== null) { send("stdout", (question ? question + " " : "") + pre + "\\n"); return pre; }
+        const id = ++askId;
+        self.postMessage({ type: "ask", id, question });
+        return new Promise((res) => askWaiters.set(id, res));
+      };
+      self.onmessage = async (e) => {
+        if (e.data.type === "answer") {
+          const res = askWaiters.get(e.data.id);
+          if (res) { askWaiters.delete(e.data.id); res(e.data.value); }
+          return;
+        }
+        const code = e.data.code;
+        inputLines = (e.data.stdin || "").split("\\n");
+        if (inputLines.length && inputLines[inputLines.length - 1] === "") inputLines.pop();
+        try {
+          if (!pyodide) {
+            self.postMessage({ type: "status", text: "Loading Python engine — the first run can take ~20 seconds…" });
+            importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
+            pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/" });
+          }
+          pyodide.setStdout({ batched: (s) => send("stdout", s + "\\n") });
+          pyodide.setStderr({ batched: (s) => send("stderr", s + "\\n") });
+          pyodide.setStdin({ stdin: () => nextStdin() ?? undefined });
+          pyodide.globals.set("__ask", __ask);
+          const transformed = code.replace(/\\binput\\s*\\(/g, "await __ask(");
+          let failed = false;
+          try {
+            await pyodide.runPythonAsync(transformed);
+          } catch (err) {
+            if (transformed !== code && String(err).includes("SyntaxError")) {
+              self.postMessage({ type: "fallback" });
+              return;
+            }
+            failed = true;
+            let text = String((err && err.message) || err);
+            const execIdx = text.indexOf('File "<exec>"');
+            if (execIdx > -1) text = "Traceback (most recent call last):\\n" + text.slice(execIdx);
+            send("stderr", text + "\\n");
+          }
+          self.postMessage({ type: "done", failed });
+        } catch (err) {
+          self.postMessage({ type: "fallback" });
+        }
+      };
+    `;
+    const worker = new Worker(URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" })));
+    activeWorker = worker;
+    let timer = null;
+    let waiting = false;
+    const armTimer = () => {
+      clearTimeout(timer);
+      if (!waiting) {
+        timer = setTimeout(() => {
+          finish();
+          appendConsole("Stopped: code ran longer than 60 seconds (possible infinite loop).\n", "stderr");
+          setConsoleStatus("Stopped — time limit reached.");
+        }, 60000);
+      }
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      worker.terminate();
+      if (activeWorker === worker) activeWorker = null;
+    };
+    const finish = () => {
+      cleanup();
+      activeCancel = null;
+      resolve();
+    };
+    activeCancel = finish;
+    worker.onmessage = async (e) => {
+      const msg = e.data;
+      if (msg.type === "done") {
+        finish();
+        setConsoleStatus(msg.failed ? "Finished with errors." : "Finished — Python ran in your browser.");
+      } else if (msg.type === "status") {
+        setConsoleStatus(msg.text);
+        armTimer();
+      } else if (msg.type === "ask") {
+        waiting = true;
+        clearTimeout(timer);
+        setConsoleStatus("Waiting for your answer…");
+        try {
+          const value = await askInteractively(msg.question);
+          waiting = false;
+          worker.postMessage({ type: "answer", id: msg.id, value });
+          setConsoleStatus("Running…");
+          armTimer();
+        } catch { /* stopped by user */ }
+      } else if (msg.type === "fallback") {
+        cleanup();
+        activeCancel = null;
+        appendConsole("Using the free online runner for this one — answers come from the Program input box.\n", "stdout");
+        try {
+          await runWandbox(code, { id: "python", name: "Python" }, stdin);
+        } catch (err) {
+          if (!stopRequested) {
+            appendConsole((err.message || "Run failed.") + "\n", "stderr");
+            setConsoleStatus("Failed.");
+          }
+        }
+        resolve();
+      } else {
+        appendConsole(msg.text, msg.type);
+        armTimer();
+      }
+    };
+    worker.onerror = () => {
+      cleanup();
+      activeCancel = null;
+      appendConsole("The in-browser Python engine failed to start. Using the free online runner instead…\n", "stdout");
+      runWandbox(code, { id: "python", name: "Python" }, stdin)
+        .catch((err) => {
+          if (!stopRequested) {
+            appendConsole((err.message || "Run failed.") + "\n", "stderr");
+            setConsoleStatus("Failed.");
+          }
+        })
+        .then(resolve);
+    };
+    setConsoleStatus("Starting Python in your browser…");
     worker.postMessage({ code, stdin });
+    armTimer();
   });
 }
 
@@ -866,6 +1139,7 @@ async function runWandbox(code, lang, stdin) {
     code = code.replace(/\bpublic\s+((?:(?:final|abstract|sealed|strictfp)\s+)*)(class|interface|enum|record)\b/g, "$1$2");
   }
   const controller = new AbortController();
+  activeFetchController = controller;
   const timer = setTimeout(() => controller.abort(), 60000);
   let res;
   try {
@@ -880,10 +1154,14 @@ async function runWandbox(code, lang, stdin) {
     throw new Error("Can't reach the free code runner. Check your connection and try again.");
   } finally {
     clearTimeout(timer);
+    if (activeFetchController === controller) activeFetchController = null;
   }
   if (res.status === 429) throw new Error("The free runner is busy (rate limit). Wait a few seconds and try again.");
   if (!res.ok) throw new Error("The runner returned an error (HTTP " + res.status + "). Try again.");
   const data = await res.json();
+  if (/OCI runtime error|Resource temporarily unavailable/.test((data.compiler_error || "") + (data.program_error || ""))) {
+    throw new Error("The free online runner is having technical difficulties right now. Try again in a few minutes.");
+  }
   const compileErr = data.compiler_error || "";
   if (compileErr) appendConsole(compileErr, "stderr");
   if (data.program_output) appendConsole(data.program_output, "stdout");
